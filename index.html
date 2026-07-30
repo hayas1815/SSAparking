@@ -62,7 +62,7 @@
       </div>
       <h2 class="text-lg font-extrabold text-slate-800">Connection Error</h2>
       <p id="setup-error-message" class="text-xs text-slate-600">Failed to connect to system server. Please check your network connection.</p>
-      <button type="button" id="retry-setup-status-btn" onclick="checkSetupStatus()"
+      <button type="button" id="retry-setup-status-btn"
         class="w-full py-3 px-4 bg-slate-800 hover:bg-slate-900 text-white font-bold rounded-xl shadow-md transition uppercase tracking-wider text-xs flex items-center justify-center gap-2">
         <i class="fa-solid fa-rotate-right"></i>
         <span>Retry Connection</span>
@@ -117,7 +117,7 @@
         <div id="login-setup-link" class="hidden text-center pt-2 border-t border-gray-100">
           <p class="text-xs text-gray-500">
             Need to set up system owner?
-            <button type="button" onclick="showSetupScreen()" class="text-brand-700 hover:text-brand-800 font-bold underline cursor-pointer">Create Account</button>
+            <button type="button" id="login-create-account-link" class="text-brand-700 hover:text-brand-800 font-bold underline cursor-pointer">Create Account</button>
           </p>
         </div>
       </div>
@@ -194,7 +194,7 @@
       <div class="mt-4 pt-3 border-t border-gray-100 text-center">
         <p class="text-xs text-slate-500">
           Already have an account? 
-          <button type="button" onclick="showLoginScreen()" class="text-amber-700 hover:text-amber-800 font-bold underline cursor-pointer">Login</button>
+          <button type="button" id="setup-login-link" class="text-amber-700 hover:text-amber-800 font-bold underline cursor-pointer">Login</button>
         </p>
       </div>
     </div>
@@ -849,7 +849,7 @@
       <p>Powered by <span class="text-slate-900 uppercase tracking-wider">BNEEDS</span></p>
     </footer>
 
-    <script src="app.js"></script>
+    <script src="app.js?v=setup-flow-fix-2"></script>
 </body>
 
 </html>

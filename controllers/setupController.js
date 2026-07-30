@@ -10,7 +10,12 @@ async function getSetupStatus(req, res) {
   try {
     const result = await db.query(`
       SELECT 
-        EXISTS (SELECT 1 FROM users WHERE role = 'owner' AND is_active = true) as has_owner,
+        EXISTS (
+          SELECT 1
+          FROM users
+          WHERE LOWER(role) = 'owner'
+            AND is_active = true
+        ) as has_owner,
         COUNT(*) as total_users
       FROM users
     `);
@@ -63,7 +68,12 @@ async function createInitialOwner(req, res) {
     await db.transaction(async (client) => {
       // 1. Check if an active owner already exists
       const ownerCheck = await client.query(`
-        SELECT EXISTS (SELECT 1 FROM users WHERE role = 'owner' AND is_active = true) as has_owner
+        SELECT EXISTS (
+          SELECT 1
+          FROM users
+          WHERE LOWER(role) = 'owner'
+            AND is_active = true
+        ) as has_owner
       `);
 
       if (ownerCheck.rows[0].has_owner) {
@@ -104,6 +114,9 @@ async function createInitialOwner(req, res) {
     return res.status(201).json({
       success: true,
       message: 'Owner account created successfully! You can now log in.',
+      setupRequired: false,
+      hasOwner: true,
+      isSetupRequired: false,
       owner: {
         id: newOwner.id,
         username: newOwner.username,

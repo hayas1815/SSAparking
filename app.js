@@ -45,15 +45,48 @@ async function authFetch(url, options = {}) {
 
 // ─── Screen Switching Helpers ─────────────────────────────────────────────────
 // ─── Screen Switching Helpers ─────────────────────────────────────────────────
-function showLoginScreen() {
+const authUiState = {
+  setupRequired: null,
+  currentScreen: null,
+  setupJustCompleted: false
+};
+
+let appSetupRequired = false;
+let setupStatusRequestId = 0;
+let setupStatusAbortController = null;
+
+function updateLoginSetupLink() {
+  const loginSetupLink = document.getElementById('login-setup-link');
+  if (!loginSetupLink) return;
+
+  if (authUiState.setupRequired === true) {
+    loginSetupLink.classList.remove('hidden');
+  } else {
+    loginSetupLink.classList.add('hidden');
+  }
+}
+
+function invalidateSetupStatusRequests() {
+  setupStatusRequestId += 1;
+  if (setupStatusAbortController) {
+    setupStatusAbortController.abort();
+    setupStatusAbortController = null;
+  }
+}
+
+function showAuthScreen(screen) {
   const loginContainer = document.getElementById('login-container');
   const setupContainer = document.getElementById('setup-container');
   const setupErrorContainer = document.getElementById('setup-error-container');
   const dashboardContainer = document.getElementById('dashboard-container');
   const footer = document.getElementById('main-footer');
 
-  if (loginContainer) loginContainer.classList.remove('hidden');
-  if (setupContainer) setupContainer.classList.add('hidden');
+  const targetScreen = screen === 'setup' && authUiState.setupRequired === false ? 'login' : screen;
+  authUiState.currentScreen = targetScreen;
+  updateLoginSetupLink();
+
+  if (loginContainer) loginContainer.classList.toggle('hidden', targetScreen !== 'login');
+  if (setupContainer) setupContainer.classList.toggle('hidden', targetScreen !== 'setup');
   if (setupErrorContainer) setupErrorContainer.classList.add('hidden');
   if (dashboardContainer) {
     dashboardContainer.classList.add('hidden');
@@ -61,25 +94,18 @@ function showLoginScreen() {
   }
   if (footer) footer.classList.remove('hidden');
 
-  const passwordInput = document.getElementById('login-password');
-  if (passwordInput) passwordInput.value = '';
+  if (targetScreen === 'login') {
+    const passwordInput = document.getElementById('login-password');
+    if (passwordInput) passwordInput.value = '';
+  }
+}
+
+function showLoginScreen() {
+  showAuthScreen('login');
 }
 
 function showSetupScreen() {
-  const loginContainer = document.getElementById('login-container');
-  const setupContainer = document.getElementById('setup-container');
-  const setupErrorContainer = document.getElementById('setup-error-container');
-  const dashboardContainer = document.getElementById('dashboard-container');
-  const footer = document.getElementById('main-footer');
-
-  if (loginContainer) loginContainer.classList.add('hidden');
-  if (setupContainer) setupContainer.classList.remove('hidden');
-  if (setupErrorContainer) setupErrorContainer.classList.add('hidden');
-  if (dashboardContainer) {
-    dashboardContainer.classList.add('hidden');
-    dashboardContainer.classList.remove('flex');
-  }
-  if (footer) footer.classList.remove('hidden');
+  showAuthScreen('setup');
 }
 
 function showSetupErrorScreen(errorMessage) {
@@ -99,11 +125,17 @@ function showSetupErrorScreen(errorMessage) {
   }
   if (footer) footer.classList.remove('hidden');
   if (errorMsgEl && errorMessage) errorMsgEl.textContent = errorMessage;
+  authUiState.currentScreen = 'setup-error';
+  updateLoginSetupLink();
 }
 
-let appSetupRequired = false;
-
 async function checkSetupStatus() {
+  const requestId = ++setupStatusRequestId;
+  if (setupStatusAbortController) {
+    setupStatusAbortController.abort();
+  }
+  setupStatusAbortController = typeof AbortController === 'function' ? new AbortController() : null;
+
   const retryBtn = document.getElementById('retry-setup-status-btn');
   if (retryBtn) {
     retryBtn.disabled = true;
@@ -111,47 +143,71 @@ async function checkSetupStatus() {
   }
 
   try {
-    const setupRes = await fetch('/api/setup/status');
+    const fetchOptions = setupStatusAbortController ? { signal: setupStatusAbortController.signal } : undefined;
+    const setupRes = await fetch('/api/setup/status', fetchOptions);
     if (!setupRes.ok) {
       throw new Error(`Server returned HTTP ${setupRes.status}`);
     }
     const setupData = await setupRes.json();
+    if (requestId !== setupStatusRequestId) return;
     if (!setupData.success) {
       throw new Error(setupData.message || 'Setup status check failed');
     }
 
     appSetupRequired = Boolean(setupData.setupRequired || setupData.isSetupRequired);
-
-    const loginSetupLink = document.getElementById('login-setup-link');
-    if (loginSetupLink) {
-      if (appSetupRequired) {
-        loginSetupLink.classList.remove('hidden');
-      } else {
-        loginSetupLink.classList.add('hidden');
-      }
-    }
+    authUiState.setupRequired = appSetupRequired;
+    updateLoginSetupLink();
 
     if (appSetupRequired) {
-      showSetupScreen();
+      showAuthScreen('setup');
     } else {
-      showLoginScreen();
+      authUiState.setupJustCompleted = false;
+      showAuthScreen('login');
     }
   } catch (e) {
+    if (e.name === 'AbortError') return;
+    if (requestId !== setupStatusRequestId) return;
     console.error('[SETUP] Could not check setup status:', e);
     showSetupErrorScreen(e.message || 'Failed to connect to system server. Please check your network connection.');
   } finally {
-    if (retryBtn) {
+    if (requestId === setupStatusRequestId && retryBtn) {
       retryBtn.disabled = false;
       retryBtn.innerHTML = '<i class="fa-solid fa-rotate-right"></i> <span>Retry Connection</span>';
+    }
+    if (requestId === setupStatusRequestId) {
+      setupStatusAbortController = null;
     }
   }
 }
 
 // ─── DOMContentLoaded ─────────────────────────────────────────────────────────
+function setupAuthNavigationHandlers() {
+  document.getElementById('setup-login-link')?.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    showAuthScreen('login');
+  });
+
+  document.getElementById('login-create-account-link')?.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (authUiState.setupRequired === true) {
+      showAuthScreen('setup');
+    }
+  });
+
+  document.getElementById('retry-setup-status-btn')?.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    checkSetupStatus();
+  });
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
   startLiveClock();
   setupKeyboardShortcuts();
   setupEnterKeyNavigation();
+  setupAuthNavigationHandlers();
 
   // Clear login inputs
   const usernameInput = document.getElementById('login-username');
@@ -1170,7 +1226,10 @@ async function handleSetup(event) {
     console.log('[SETUP] Response received. HTTP status:', response.status, 'Success:', data.success);
 
     if (response.ok && data.success) {
+      invalidateSetupStatusRequests();
       appSetupRequired = false;
+      authUiState.setupRequired = false;
+      authUiState.setupJustCompleted = true;
       showToast('Account created successfully. Please log in.', 'success');
 
       // Pre-fill username on login form and clear password fields
@@ -1181,19 +1240,17 @@ async function handleSetup(event) {
       if (loginPassEl) loginPassEl.value = '';
       if (setupPassEl) setupPassEl.value = '';
 
-      // Hide setup link on login screen since owner now exists
-      const loginSetupLink = document.getElementById('login-setup-link');
-      if (loginSetupLink) loginSetupLink.classList.add('hidden');
-
-      showLoginScreen();
+      updateLoginSetupLink();
+      showAuthScreen('login');
     } else if (response.status === 409 || data.errorCode === 'SETUP_ALREADY_COMPLETED') {
+      invalidateSetupStatusRequests();
       appSetupRequired = false;
+      authUiState.setupRequired = false;
+      authUiState.setupJustCompleted = true;
       showToast(data.message || 'Setup is already complete. Please log in.', 'error');
 
-      const loginSetupLink = document.getElementById('login-setup-link');
-      if (loginSetupLink) loginSetupLink.classList.add('hidden');
-
-      showLoginScreen();
+      updateLoginSetupLink();
+      showAuthScreen('login');
     } else {
       showToast(data.message || 'Setup failed. Please try again.', 'error');
     }
