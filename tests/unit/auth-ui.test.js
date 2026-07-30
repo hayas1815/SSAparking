@@ -82,6 +82,10 @@ function response(body, ok = true, status = 200) {
   };
 }
 
+function isSetupStatusUrl(url) {
+  return /^\/api\/setup\/status\?t=\d+$/.test(url);
+}
+
 function createHarness(fetchImpl) {
   const elements = new Map();
   const ids = [
@@ -148,6 +152,7 @@ function createHarness(fetchImpl) {
     run: (code) => vm.runInContext(code, context),
     screen: () => vm.runInContext('authUiState.currentScreen', context),
     setupRequired: () => vm.runInContext('authUiState.setupRequired', context),
+    hasOwner: () => vm.runInContext('authUiState.hasOwner', context),
     fireDOMContentLoaded: async () => {
       for (const handler of documentListeners.DOMContentLoaded || []) {
         await handler();
@@ -162,7 +167,7 @@ describe('Auth UI setup flow', () => {
     const calls = [];
     const harness = createHarness((url) => {
       calls.push(url);
-      if (url === '/api/setup/status') return status.promise;
+      if (isSetupStatusUrl(url)) return status.promise;
       return Promise.resolve(response({ success: true }, true, 201));
     });
 
@@ -171,7 +176,7 @@ describe('Auth UI setup flow', () => {
     assert.equal(harness.screen(), 'login');
     assert.equal(harness.setupRequired(), false);
 
-    status.resolve(response({ success: true, setupRequired: true }));
+    status.resolve(response({ success: true, setupRequired: true, hasOwner: false }));
     await statusPromise;
 
     assert.equal(harness.screen(), 'login');
@@ -183,7 +188,7 @@ describe('Auth UI setup flow', () => {
     const second = deferred();
     let statusCalls = 0;
     const harness = createHarness((url) => {
-      if (url !== '/api/setup/status') return Promise.reject(new Error(`Unexpected URL ${url}`));
+      if (!isSetupStatusUrl(url)) return Promise.reject(new Error(`Unexpected URL ${url}`));
       statusCalls += 1;
       return statusCalls === 1 ? first.promise : second.promise;
     });
@@ -191,9 +196,9 @@ describe('Auth UI setup flow', () => {
     const firstPromise = harness.run('checkSetupStatus()');
     const secondPromise = harness.run('checkSetupStatus()');
 
-    second.resolve(response({ success: true, setupRequired: false }));
+    second.resolve(response({ success: true, setupRequired: false, hasOwner: true }));
     await secondPromise;
-    first.resolve(response({ success: true, setupRequired: true }));
+    first.resolve(response({ success: true, setupRequired: true, hasOwner: false }));
     await firstPromise;
 
     assert.equal(harness.screen(), 'login');
@@ -201,7 +206,7 @@ describe('Auth UI setup flow', () => {
   });
 
   it('the Setup Login link opens Login without default form/navigation behavior', () => {
-    const harness = createHarness(() => Promise.resolve(response({ success: true, setupRequired: true })));
+    const harness = createHarness(() => Promise.resolve(response({ success: true, setupRequired: true, hasOwner: false })));
     harness.run('authUiState.setupRequired = true; showAuthScreen("setup"); setupAuthNavigationHandlers();');
 
     const event = {
@@ -233,7 +238,7 @@ describe('Auth UI setup flow', () => {
   });
 
   it('the Login Create Account link is disabled once setup status is false', () => {
-    const harness = createHarness(() => Promise.resolve(response({ success: true, setupRequired: false })));
+    const harness = createHarness(() => Promise.resolve(response({ success: true, setupRequired: false, hasOwner: true })));
     harness.run('authUiState.setupRequired = false; showAuthScreen("login"); setupAuthNavigationHandlers();');
 
     harness.elements.get('login-create-account-link').dispatchEvent({
@@ -252,7 +257,7 @@ describe('Auth UI setup flow', () => {
     const harness = createHarness((url) => {
       calls.push(url);
       if (url === '/api/setup') return setup.promise;
-      return Promise.resolve(response({ success: true, setupRequired: true }));
+      return Promise.resolve(response({ success: true, setupRequired: true, hasOwner: false }));
     });
 
     const firstSubmit = harness.run('handleSetup({ preventDefault() {} })');
@@ -262,5 +267,76 @@ describe('Auth UI setup flow', () => {
 
     assert.equal(calls.filter((url) => url === '/api/setup').length, 1);
     assert.equal(harness.screen(), 'login');
+    assert.equal(harness.setupRequired(), false);
+    assert.equal(harness.hasOwner(), true);
+    assert.equal(calls.filter(isSetupStatusUrl).length, 0);
+  });
+
+  it('uses a cache-busting URL and no-store fetch options for setup status', async () => {
+    let capturedUrl = null;
+    let capturedOptions = null;
+    const harness = createHarness((url, options) => {
+      capturedUrl = url;
+      capturedOptions = options;
+      return Promise.resolve(response({ success: true, setupRequired: false, hasOwner: true }));
+    });
+
+    await harness.run('checkSetupStatus()');
+
+    assert.match(capturedUrl, /^\/api\/setup\/status\?t=\d+$/);
+    assert.equal(capturedOptions.method, 'GET');
+    assert.equal(capturedOptions.cache, 'no-store');
+    assert.equal(capturedOptions.headers.Accept, 'application/json');
+    assert.equal(capturedOptions.headers['Cache-Control'], 'no-cache');
+  });
+
+  it('does not use an HTTP 304 response to change the current UI state', async () => {
+    const harness = createHarness(() => Promise.resolve(response(
+      { success: true, setupRequired: true, hasOwner: false },
+      false,
+      304
+    )));
+    harness.run('authUiState.setupRequired = false; authUiState.hasOwner = true; showAuthScreen("login");');
+
+    await harness.run('checkSetupStatus()');
+
+    assert.equal(harness.screen(), 'login');
+    assert.equal(harness.setupRequired(), false);
+    assert.equal(harness.hasOwner(), true);
+  });
+
+  it('does not change UI state for malformed or contradictory status booleans', async () => {
+    const invalidResponses = [
+      { success: true, setupRequired: 'true', hasOwner: false },
+      { success: true, setupRequired: true, hasOwner: true },
+      { success: true, setupRequired: false }
+    ];
+
+    for (const body of invalidResponses) {
+      const harness = createHarness(() => Promise.resolve(response(body)));
+      harness.run('authUiState.setupRequired = false; authUiState.hasOwner = true; showAuthScreen("login");');
+
+      await harness.run('checkSetupStatus()');
+
+      assert.equal(harness.screen(), 'login');
+      assert.equal(harness.setupRequired(), false);
+      assert.equal(harness.hasOwner(), true);
+    }
+  });
+
+  it('keeps Login visible after successful setup without scheduling another status request', async () => {
+    const calls = [];
+    const harness = createHarness((url) => {
+      calls.push(url);
+      return Promise.resolve(response({ success: true, setupRequired: false, hasOwner: true }, true, 201));
+    });
+
+    await harness.run('handleSetup({ preventDefault() {} })');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    assert.equal(harness.screen(), 'login');
+    assert.equal(harness.setupRequired(), false);
+    assert.equal(harness.hasOwner(), true);
+    assert.equal(calls.filter(isSetupStatusUrl).length, 0);
   });
 });

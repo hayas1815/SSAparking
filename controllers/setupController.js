@@ -2,27 +2,48 @@ const db = require('../db');
 const { hashPassword } = require('../utils/password');
 const { logAudit } = require('../utils/logger');
 
+function setSetupStatusNoCacheHeaders(res) {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  res.setHeader('Surrogate-Control', 'no-store');
+}
+
 /**
  * Check if initial setup is required (if no active owner user exists)
  * Returns unambiguous setupRequired and hasOwner status.
  */
 async function getSetupStatus(req, res) {
+  setSetupStatusNoCacheHeaders(res);
+
   try {
     const result = await db.query(`
-      SELECT 
+      SELECT
         EXISTS (
           SELECT 1
           FROM users
-          WHERE LOWER(role) = 'owner'
-            AND is_active = true
+          WHERE LOWER(TRIM(role)) = 'owner'
+            AND is_active IS TRUE
         ) as has_owner,
-        COUNT(*) as total_users
-      FROM users
+        (SELECT COUNT(*) FROM users) as total_users,
+        (
+          SELECT COUNT(*)
+          FROM users
+          WHERE LOWER(TRIM(role)) = 'owner'
+            AND is_active IS TRUE
+        ) as active_owner_count
     `);
 
     const hasOwner = Boolean(result.rows[0].has_owner);
     const totalUsers = parseInt(result.rows[0].total_users || '0', 10);
+    const activeOwnerCount = parseInt(result.rows[0].active_owner_count || '0', 10);
     const setupRequired = !hasOwner;
+
+    console.info('[SETUP STATUS]', {
+      hasOwner,
+      userCount: totalUsers,
+      activeOwnerCount
+    });
 
     res.json({
       success: true,
@@ -71,8 +92,8 @@ async function createInitialOwner(req, res) {
         SELECT EXISTS (
           SELECT 1
           FROM users
-          WHERE LOWER(role) = 'owner'
-            AND is_active = true
+          WHERE LOWER(TRIM(role)) = 'owner'
+            AND is_active IS TRUE
         ) as has_owner
       `);
 
@@ -102,11 +123,15 @@ async function createInitialOwner(req, res) {
       const insertSql = `
         INSERT INTO users (username, password, full_name, phone, role, is_active)
         VALUES ($1, $2, $3, $4, 'owner', true)
-        RETURNING id, username, full_name, role
+        RETURNING id, username, full_name, role, is_active
       `;
 
       const result = await client.query(insertSql, [cleanUsername, hashedPassword, cleanFullName, cleanPhone]);
       newOwner = result.rows[0];
+
+      if (String(newOwner.role).trim().toLowerCase() !== 'owner' || newOwner.is_active !== true) {
+        throw new Error('Created owner account failed role or active-state verification.');
+      }
     });
 
     await logAudit(req, 'INITIAL_SETUP', `First owner account created: ${newOwner.username}`, newOwner.id, newOwner.username);

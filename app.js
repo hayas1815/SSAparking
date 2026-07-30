@@ -47,6 +47,7 @@ async function authFetch(url, options = {}) {
 // ─── Screen Switching Helpers ─────────────────────────────────────────────────
 const authUiState = {
   setupRequired: null,
+  hasOwner: null,
   currentScreen: null,
   setupJustCompleted: false
 };
@@ -143,19 +144,47 @@ async function checkSetupStatus() {
   }
 
   try {
-    const fetchOptions = setupStatusAbortController ? { signal: setupStatusAbortController.signal } : undefined;
-    const setupRes = await fetch('/api/setup/status', fetchOptions);
-    if (!setupRes.ok) {
-      throw new Error(`Server returned HTTP ${setupRes.status}`);
-    }
-    const setupData = await setupRes.json();
-    if (requestId !== setupStatusRequestId) return;
-    if (!setupData.success) {
-      throw new Error(setupData.message || 'Setup status check failed');
+    const fetchOptions = {
+      method: 'GET',
+      cache: 'no-store',
+      headers: {
+        Accept: 'application/json',
+        'Cache-Control': 'no-cache'
+      }
+    };
+    if (setupStatusAbortController) {
+      fetchOptions.signal = setupStatusAbortController.signal;
     }
 
-    appSetupRequired = Boolean(setupData.setupRequired || setupData.isSetupRequired);
-    authUiState.setupRequired = appSetupRequired;
+    const setupRes = await fetch(`/api/setup/status?t=${Date.now()}`, fetchOptions);
+    if (requestId !== setupStatusRequestId) return;
+    if (!setupRes.ok) {
+      console.error(`[SETUP] Setup status request returned HTTP ${setupRes.status}; keeping the current screen.`);
+      return;
+    }
+
+    let setupData;
+    try {
+      setupData = await setupRes.json();
+    } catch (error) {
+      console.error('[SETUP] Setup status response was not valid JSON; keeping the current screen.', error);
+      return;
+    }
+
+    if (requestId !== setupStatusRequestId) return;
+    const hasValidStatus = setupData?.success === true
+      && typeof setupData.setupRequired === 'boolean'
+      && typeof setupData.hasOwner === 'boolean'
+      && setupData.setupRequired === !setupData.hasOwner;
+
+    if (!hasValidStatus) {
+      console.error('[SETUP] Setup status response was invalid or inconsistent; keeping the current screen.');
+      return;
+    }
+
+    appSetupRequired = setupData.setupRequired;
+    authUiState.setupRequired = setupData.setupRequired;
+    authUiState.hasOwner = setupData.hasOwner;
     updateLoginSetupLink();
 
     if (appSetupRequired) {
@@ -168,7 +197,6 @@ async function checkSetupStatus() {
     if (e.name === 'AbortError') return;
     if (requestId !== setupStatusRequestId) return;
     console.error('[SETUP] Could not check setup status:', e);
-    showSetupErrorScreen(e.message || 'Failed to connect to system server. Please check your network connection.');
   } finally {
     if (requestId === setupStatusRequestId && retryBtn) {
       retryBtn.disabled = false;
@@ -1229,6 +1257,7 @@ async function handleSetup(event) {
       invalidateSetupStatusRequests();
       appSetupRequired = false;
       authUiState.setupRequired = false;
+      authUiState.hasOwner = true;
       authUiState.setupJustCompleted = true;
       showToast('Account created successfully. Please log in.', 'success');
 
@@ -1246,6 +1275,7 @@ async function handleSetup(event) {
       invalidateSetupStatusRequests();
       appSetupRequired = false;
       authUiState.setupRequired = false;
+      authUiState.hasOwner = true;
       authUiState.setupJustCompleted = true;
       showToast(data.message || 'Setup is already complete. Please log in.', 'error');
 

@@ -47,11 +47,15 @@ describe('Setup Controller — Unit / Logic Tests', () => {
     let sql = '';
     db.query = async (queryText) => {
       sql = queryText;
-      return { rows: [{ has_owner: true, total_users: '1' }] };
+      return { rows: [{ has_owner: true, total_users: '3', active_owner_count: '1' }] };
     };
 
     let jsonResult = null;
+    const headers = {};
     const res = {
+      setHeader(name, value) {
+        headers[name] = value;
+      },
       json(data) {
         jsonResult = data;
         return this;
@@ -64,11 +68,67 @@ describe('Setup Controller — Unit / Logic Tests', () => {
       db.query = originalQuery;
     }
 
-    assert.match(sql, /LOWER\(role\)\s*=\s*'owner'/i);
-    assert.match(sql, /is_active\s*=\s*true/i);
+    assert.match(sql, /LOWER\(TRIM\(role\)\)\s*=\s*'owner'/i);
+    assert.match(sql, /is_active\s+IS\s+TRUE/i);
     assert.equal(jsonResult.success, true);
     assert.equal(jsonResult.setupRequired, false);
     assert.equal(jsonResult.hasOwner, true);
     assert.equal(jsonResult.isSetupRequired, false);
+    assert.equal(headers['Cache-Control'], 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    assert.equal(headers.Pragma, 'no-cache');
+    assert.equal(headers.Expires, '0');
+    assert.equal(headers['Surrogate-Control'], 'no-store');
+  });
+
+  for (const role of ['OWNER', 'Owner', 'owner']) {
+    it(`should detect active ${role} role as an owner`, async () => {
+      const originalQuery = db.query;
+      let jsonResult = null;
+      db.query = async (queryText) => {
+        assert.match(queryText, /LOWER\(TRIM\(role\)\)\s*=\s*'owner'/i);
+        return { rows: [{ has_owner: role.trim().toLowerCase() === 'owner', total_users: '1', active_owner_count: '1' }] };
+      };
+      const res = {
+        setHeader() {},
+        json(data) {
+          jsonResult = data;
+          return this;
+        }
+      };
+
+      try {
+        await getSetupStatus({}, res);
+      } finally {
+        db.query = originalQuery;
+      }
+
+      assert.equal(jsonResult.hasOwner, true);
+      assert.equal(jsonResult.setupRequired, false);
+    });
+  }
+
+  it('should not treat an inactive owner as an active owner', async () => {
+    const originalQuery = db.query;
+    let jsonResult = null;
+    db.query = async (queryText) => {
+      assert.match(queryText, /is_active\s+IS\s+TRUE/i);
+      return { rows: [{ has_owner: false, total_users: '1', active_owner_count: '0' }] };
+    };
+    const res = {
+      setHeader() {},
+      json(data) {
+        jsonResult = data;
+        return this;
+      }
+    };
+
+    try {
+      await getSetupStatus({}, res);
+    } finally {
+      db.query = originalQuery;
+    }
+
+    assert.equal(jsonResult.hasOwner, false);
+    assert.equal(jsonResult.setupRequired, true);
   });
 });
