@@ -131,6 +131,25 @@ function showSetupErrorScreen(errorMessage) {
 }
 
 async function checkSetupStatus() {
+  const token = getAuthToken();
+  const storedSession = sessionStorage.getItem('veloReg_session');
+
+  if (token && storedSession) {
+    try {
+      const session = JSON.parse(storedSession);
+      const verifyRes = await fetch('/api/me', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (verifyRes.ok) {
+        showDashboard(session);
+        return;
+      }
+      clearAuthToken();
+    } catch (error) {
+      clearAuthToken();
+    }
+  }
+
   const requestId = ++setupStatusRequestId;
   if (setupStatusAbortController) {
     setupStatusAbortController.abort();
@@ -208,21 +227,41 @@ async function checkSetupStatus() {
   }
 }
 
-// ─── DOMContentLoaded ─────────────────────────────────────────────────────────
-function setupAuthNavigationHandlers() {
-  document.getElementById('setup-login-link')?.addEventListener('click', (event) => {
+// ─── Application Initialization ───────────────────────────────────────────────
+let authEventsInitialized = false;
+
+function initializeAuthEvents() {
+  if (authEventsInitialized) return;
+  authEventsInitialized = true;
+
+  const setupForm = document.getElementById('setup-form');
+  if (setupForm) {
+    setupForm.addEventListener('submit', handleSetup);
+    console.info('[Auth] setup listener attached');
+  }
+
+  document.getElementById('login-form')?.addEventListener('submit', handleLogin);
+
+  const setupLoginLink = document.getElementById('setup-login-link');
+  setupLoginLink?.addEventListener('click', (event) => {
     event.preventDefault();
     event.stopPropagation();
     showAuthScreen('login');
   });
+  if (setupLoginLink) {
+    console.info('[Auth] login link listener attached');
+  }
 
-  document.getElementById('login-create-account-link')?.addEventListener('click', (event) => {
+  const showSetupWhenRequired = (event) => {
     event.preventDefault();
     event.stopPropagation();
     if (authUiState.setupRequired === true) {
       showAuthScreen('setup');
     }
-  });
+  };
+
+  document.getElementById('login-setup-link')?.addEventListener('click', showSetupWhenRequired);
+  document.getElementById('login-create-account-link')?.addEventListener('click', showSetupWhenRequired);
 
   document.getElementById('retry-setup-status-btn')?.addEventListener('click', (event) => {
     event.preventDefault();
@@ -231,43 +270,36 @@ function setupAuthNavigationHandlers() {
   });
 }
 
-document.addEventListener('DOMContentLoaded', async () => {
+// Retained for compatibility with existing callers while registration remains idempotent.
+function setupAuthNavigationHandlers() {
+  initializeAuthEvents();
+}
+
+let appInitialized = false;
+
+function initializeApp() {
+  if (appInitialized) return;
+  appInitialized = true;
+
+  console.info('[Auth] initialization started');
+  initializeAuthEvents();
   startLiveClock();
   setupKeyboardShortcuts();
   setupEnterKeyNavigation();
-  setupAuthNavigationHandlers();
 
-  // Clear login inputs
   const usernameInput = document.getElementById('login-username');
   const passwordInput = document.getElementById('login-password');
   if (usernameInput) usernameInput.value = '';
   if (passwordInput) passwordInput.value = '';
 
-  // Check if there is an active JWT session
-  const token = getAuthToken();
-  const storedSession = sessionStorage.getItem('veloReg_session');
+  checkSetupStatus();
+}
 
-  if (token && storedSession) {
-    try {
-      const session = JSON.parse(storedSession);
-      // Verify token is still valid with the server
-      const verifyRes = await fetch('/api/me', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (verifyRes.ok) {
-        showDashboard(session);
-        return;
-      } else {
-        clearAuthToken();
-      }
-    } catch (e) {
-      clearAuthToken();
-    }
-  }
-
-  // Perform setup status check and route accordingly
-  await checkSetupStatus();
-});
+if (document.readyState === 'loading' || typeof document.readyState !== 'string') {
+  document.addEventListener('DOMContentLoaded', initializeApp, { once: true });
+} else {
+  initializeApp();
+}
 
 // Sequential Enter Key Navigation between Form Fields
 function setupEnterKeyNavigation() {
@@ -1241,13 +1273,13 @@ async function handleSetup(event) {
     setupBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin text-xs"></i> <span>Creating Owner Account...</span>';
   }
 
-  console.log('[SETUP] Submitting initial owner registration request for username:', username);
+  console.info('[Setup] submission started');
 
   try {
     const response = await fetch('/api/setup', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password, fullName, phone })
+      body: JSON.stringify({ fullName, username, password, phone })
     });
     const data = await response.json();
 
