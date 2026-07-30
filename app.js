@@ -44,39 +44,107 @@ async function authFetch(url, options = {}) {
 }
 
 // ─── Screen Switching Helpers ─────────────────────────────────────────────────
+// ─── Screen Switching Helpers ─────────────────────────────────────────────────
 function showLoginScreen() {
   const loginContainer = document.getElementById('login-container');
   const setupContainer = document.getElementById('setup-container');
+  const setupErrorContainer = document.getElementById('setup-error-container');
   const dashboardContainer = document.getElementById('dashboard-container');
   const footer = document.getElementById('main-footer');
 
   if (loginContainer) loginContainer.classList.remove('hidden');
   if (setupContainer) setupContainer.classList.add('hidden');
+  if (setupErrorContainer) setupErrorContainer.classList.add('hidden');
   if (dashboardContainer) {
     dashboardContainer.classList.add('hidden');
     dashboardContainer.classList.remove('flex');
   }
   if (footer) footer.classList.remove('hidden');
 
-  const usernameInput = document.getElementById('login-username');
   const passwordInput = document.getElementById('login-password');
-  if (usernameInput) usernameInput.value = '';
   if (passwordInput) passwordInput.value = '';
 }
 
 function showSetupScreen() {
   const loginContainer = document.getElementById('login-container');
   const setupContainer = document.getElementById('setup-container');
+  const setupErrorContainer = document.getElementById('setup-error-container');
   const dashboardContainer = document.getElementById('dashboard-container');
   const footer = document.getElementById('main-footer');
 
   if (loginContainer) loginContainer.classList.add('hidden');
   if (setupContainer) setupContainer.classList.remove('hidden');
+  if (setupErrorContainer) setupErrorContainer.classList.add('hidden');
   if (dashboardContainer) {
     dashboardContainer.classList.add('hidden');
     dashboardContainer.classList.remove('flex');
   }
   if (footer) footer.classList.remove('hidden');
+}
+
+function showSetupErrorScreen(errorMessage) {
+  const loginContainer = document.getElementById('login-container');
+  const setupContainer = document.getElementById('setup-container');
+  const setupErrorContainer = document.getElementById('setup-error-container');
+  const dashboardContainer = document.getElementById('dashboard-container');
+  const footer = document.getElementById('main-footer');
+  const errorMsgEl = document.getElementById('setup-error-message');
+
+  if (loginContainer) loginContainer.classList.add('hidden');
+  if (setupContainer) setupContainer.classList.add('hidden');
+  if (setupErrorContainer) setupErrorContainer.classList.remove('hidden');
+  if (dashboardContainer) {
+    dashboardContainer.classList.add('hidden');
+    dashboardContainer.classList.remove('flex');
+  }
+  if (footer) footer.classList.remove('hidden');
+  if (errorMsgEl && errorMessage) errorMsgEl.textContent = errorMessage;
+}
+
+let appSetupRequired = false;
+
+async function checkSetupStatus() {
+  const retryBtn = document.getElementById('retry-setup-status-btn');
+  if (retryBtn) {
+    retryBtn.disabled = true;
+    retryBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin text-xs"></i> <span>Checking Status...</span>';
+  }
+
+  try {
+    const setupRes = await fetch('/api/setup/status');
+    if (!setupRes.ok) {
+      throw new Error(`Server returned HTTP ${setupRes.status}`);
+    }
+    const setupData = await setupRes.json();
+    if (!setupData.success) {
+      throw new Error(setupData.message || 'Setup status check failed');
+    }
+
+    appSetupRequired = Boolean(setupData.setupRequired || setupData.isSetupRequired);
+
+    const loginSetupLink = document.getElementById('login-setup-link');
+    if (loginSetupLink) {
+      if (appSetupRequired) {
+        loginSetupLink.classList.remove('hidden');
+      } else {
+        loginSetupLink.classList.add('hidden');
+      }
+    }
+
+    if (appSetupRequired) {
+      showSetupScreen();
+    } else {
+      showLoginScreen();
+    }
+  } catch (e) {
+    console.error('[SETUP] Could not check setup status:', e);
+    showSetupErrorScreen(e.message || 'Failed to connect to system server. Please check your network connection.');
+  } finally {
+    if (retryBtn) {
+      retryBtn.disabled = false;
+      retryBtn.innerHTML = '<i class="fa-solid fa-rotate-right"></i> <span>Retry Connection</span>';
+    }
+  }
 }
 
 // ─── DOMContentLoaded ─────────────────────────────────────────────────────────
@@ -113,20 +181,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  // Check if initial setup is required (no owner exists)
-  try {
-    const setupRes = await fetch('/api/setup/status');
-    const setupData = await setupRes.json();
-    if (setupData.isSetupRequired) {
-      showSetupScreen();
-      return;
-    }
-  } catch (e) {
-    console.warn('Could not check setup status:', e);
-  }
-
-  // Show login screen by default
-  showLoginScreen();
+  // Perform setup status check and route accordingly
+  await checkSetupStatus();
 });
 
 // Sequential Enter Key Navigation between Form Fields
@@ -1072,9 +1128,13 @@ async function handleLogin(event) {
   }
 }
 
+let isSubmittingSetup = false;
+
 // Handle Initial Setup Submission (First Owner Account)
 async function handleSetup(event) {
   event.preventDefault();
+  if (isSubmittingSetup) return;
+
   const username = (document.getElementById('setup-username')?.value || '').trim();
   const password = document.getElementById('setup-password')?.value || '';
   const fullName = (document.getElementById('setup-fullname')?.value || '').trim();
@@ -1091,10 +1151,13 @@ async function handleSetup(event) {
     return;
   }
 
+  isSubmittingSetup = true;
   if (setupBtn) {
     setupBtn.disabled = true;
     setupBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin text-xs"></i> <span>Creating Owner Account...</span>';
   }
+
+  console.log('[SETUP] Submitting initial owner registration request for username:', username);
 
   try {
     const response = await fetch('/api/setup', {
@@ -1104,16 +1167,41 @@ async function handleSetup(event) {
     });
     const data = await response.json();
 
+    console.log('[SETUP] Response received. HTTP status:', response.status, 'Success:', data.success);
+
     if (response.ok && data.success) {
-      showToast('Owner account created! Please log in.', 'success');
+      appSetupRequired = false;
+      showToast('Account created successfully. Please log in.', 'success');
+
+      // Pre-fill username on login form and clear password fields
+      const loginUserEl = document.getElementById('login-username');
+      const loginPassEl = document.getElementById('login-password');
+      const setupPassEl = document.getElementById('setup-password');
+      if (loginUserEl) loginUserEl.value = username;
+      if (loginPassEl) loginPassEl.value = '';
+      if (setupPassEl) setupPassEl.value = '';
+
+      // Hide setup link on login screen since owner now exists
+      const loginSetupLink = document.getElementById('login-setup-link');
+      if (loginSetupLink) loginSetupLink.classList.add('hidden');
+
+      showLoginScreen();
+    } else if (response.status === 409 || data.errorCode === 'SETUP_ALREADY_COMPLETED') {
+      appSetupRequired = false;
+      showToast(data.message || 'Setup is already complete. Please log in.', 'error');
+
+      const loginSetupLink = document.getElementById('login-setup-link');
+      if (loginSetupLink) loginSetupLink.classList.add('hidden');
+
       showLoginScreen();
     } else {
       showToast(data.message || 'Setup failed. Please try again.', 'error');
     }
   } catch (err) {
-    console.error('Setup error:', err);
-    showToast('Setup failed. Please check your connection.', 'error');
+    console.error('[SETUP] Network error during setup submission:', err);
+    showToast('Setup failed. Network connection error.', 'error');
   } finally {
+    isSubmittingSetup = false;
     if (setupBtn) {
       setupBtn.disabled = false;
       setupBtn.innerHTML = '<span>CREATE OWNER ACCOUNT</span><i class="fa-solid fa-arrow-right text-xs"></i>';

@@ -3,22 +3,34 @@ const { hashPassword } = require('../utils/password');
 const { logAudit } = require('../utils/logger');
 
 /**
- * Check if initial setup is required (if users table has 0 users)
+ * Check if initial setup is required (if no active owner user exists)
+ * Returns unambiguous setupRequired and hasOwner status.
  */
 async function getSetupStatus(req, res) {
   try {
-    const result = await db.query(`SELECT COUNT(*) as count FROM users`);
-    const userCount = parseInt(result.rows[0].count, 10);
+    const result = await db.query(`
+      SELECT 
+        EXISTS (SELECT 1 FROM users WHERE role = 'owner' AND is_active = true) as has_owner,
+        COUNT(*) as total_users
+      FROM users
+    `);
+
+    const hasOwner = Boolean(result.rows[0].has_owner);
+    const totalUsers = parseInt(result.rows[0].total_users || '0', 10);
+    const setupRequired = !hasOwner;
 
     res.json({
       success: true,
-      isSetupRequired: userCount === 0,
-      userCount: userCount
+      setupRequired,
+      hasOwner,
+      isSetupRequired: setupRequired, // Backward compatibility
+      userCount: totalUsers
     });
   } catch (err) {
+    console.error('Setup status check error:', err.message);
     res.status(500).json({
       success: false,
-      message: err.message,
+      message: 'Failed to retrieve setup status.',
       errorCode: 'INTERNAL_SERVER_ERROR',
       timestamp: new Date().toISOString()
     });
@@ -26,37 +38,70 @@ async function getSetupStatus(req, res) {
 }
 
 /**
- * Initial One-Time Setup to create the first Owner account
+ * Initial One-Time Setup to create the first Owner account.
+ * Atomically guarded against duplicate owner creation using database transaction.
  */
 async function createInitialOwner(req, res) {
+  const { username, password, fullName, phone } = req.body || {};
+
+  if (!username || !password || !fullName) {
+    return res.status(400).json({
+      success: false,
+      message: 'Username, password, and full name are required.',
+      errorCode: 'INVALID_INPUT',
+      timestamp: new Date().toISOString()
+    });
+  }
+
+  const cleanUsername = String(username).toLowerCase().trim();
+  const cleanFullName = String(fullName).trim();
+  const cleanPhone = String(phone || '').trim();
+
   try {
-    const countResult = await db.query(`SELECT COUNT(*) as count FROM users`);
-    const userCount = parseInt(countResult.rows[0].count, 10);
+    let newOwner = null;
 
-    if (userCount > 0) {
-      return res.status(403).json({
-        success: false,
-        message: 'Initial setup disabled. Owner account has already been registered.',
-        errorCode: 'SETUP_DISABLED',
-        timestamp: new Date().toISOString()
-      });
-    }
+    await db.transaction(async (client) => {
+      // 1. Check if an active owner already exists
+      const ownerCheck = await client.query(`
+        SELECT EXISTS (SELECT 1 FROM users WHERE role = 'owner' AND is_active = true) as has_owner
+      `);
 
-    const { username, password, fullName, phone } = req.body;
-    const hashedPassword = await hashPassword(password);
-    const cleanUsername = username.toLowerCase().trim();
+      if (ownerCheck.rows[0].has_owner) {
+        const err = new Error('Setup is already complete. Please log in.');
+        err.statusCode = 409;
+        err.errorCode = 'SETUP_ALREADY_COMPLETED';
+        throw err;
+      }
 
-    const insertSql = `
-      INSERT INTO users (username, password, full_name, phone, role)
-      VALUES ($1, $2, $3, $4, 'owner')
-      RETURNING id, username, full_name, role
-    `;
-    const result = await db.query(insertSql, [cleanUsername, hashedPassword, fullName, phone || '']);
-    const newOwner = result.rows[0];
+      // 2. Check if username is already taken
+      const userCheck = await client.query(
+        `SELECT 1 FROM users WHERE LOWER(username) = LOWER($1)`,
+        [cleanUsername]
+      );
+
+      if (userCheck.rows.length > 0) {
+        const err = new Error('Username is already taken. Please choose a different username.');
+        err.statusCode = 409;
+        err.errorCode = 'USERNAME_EXISTS';
+        throw err;
+      }
+
+      // 3. Hash password and insert owner
+      const hashedPassword = await hashPassword(password);
+
+      const insertSql = `
+        INSERT INTO users (username, password, full_name, phone, role, is_active)
+        VALUES ($1, $2, $3, $4, 'owner', true)
+        RETURNING id, username, full_name, role
+      `;
+
+      const result = await client.query(insertSql, [cleanUsername, hashedPassword, cleanFullName, cleanPhone]);
+      newOwner = result.rows[0];
+    });
 
     await logAudit(req, 'INITIAL_SETUP', `First owner account created: ${newOwner.username}`, newOwner.id, newOwner.username);
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       message: 'Owner account created successfully! You can now log in.',
       owner: {
@@ -67,8 +112,17 @@ async function createInitialOwner(req, res) {
       }
     });
   } catch (err) {
+    if (err.statusCode === 409) {
+      return res.status(409).json({
+        success: false,
+        message: err.message,
+        errorCode: err.errorCode || 'SETUP_ALREADY_COMPLETED',
+        timestamp: new Date().toISOString()
+      });
+    }
+
     console.error('Initial setup error:', err);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: err.message ? `Setup failed: ${err.message}` : 'Setup failed.',
       errorCode: 'INTERNAL_SERVER_ERROR',
