@@ -1,0 +1,27 @@
+# Environment Variables — NEVER commit real secrets
+.env
+
+# Node modules
+node_modules/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor directories
+.vscode/
+.idea/
+
+# Database Backups — NEVER commit backup files
+backups/
+backups/*.json
+.env
+.env.*
+!.env.example
+node_modules/
+backups/
+*.log

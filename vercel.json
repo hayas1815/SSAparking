@@ -1,0 +1,60 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "server.js",
+      "use": "@vercel/node",
+      "config": {
+        "includeFiles": [
+          "index.html",
+          "app.js",
+          "styles.css",
+          "logo.png",
+          "db.js",
+          "config/env.js",
+          "utils/password.js",
+          "utils/jwt.js",
+          "utils/logger.js",
+          "utils/response.js",
+          "utils/export.js",
+          "utils/backup.js",
+          "middleware/authMiddleware.js",
+          "middleware/validationMiddleware.js",
+          "middleware/rateLimiter.js",
+          "middleware/errorHandler.js",
+          "middleware/requestId.js",
+          "controllers/authController.js",
+          "controllers/setupController.js",
+          "controllers/parkingController.js",
+          "routes/authRoutes.js",
+          "routes/setupRoutes.js",
+          "routes/parkingRoutes.js",
+          "routes/healthRoutes.js",
+          "routes/cronRoutes.js",
+          "jobs/scheduler.js",
+          "migrations/runner.js",
+          "migrations/001_initial_schema.sql",
+          "migrations/002_fix_token_sequence.sql",
+          "migrations/003_payment_reference_columns.sql",
+          "migrations/004_phase2_2_safety.sql"
+        ]
+      }
+    }
+  ],
+  "routes": [
+    {
+      "handle": "filesystem"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "server.js"
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/cron/run",
+      "schedule": "30 20 * * *"
+    }
+  ]
+}
+
